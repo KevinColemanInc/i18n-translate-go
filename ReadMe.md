@@ -54,9 +54,13 @@ Saved result in: ko.json
 3. Sends the chunks to completions API using function calling.
 4. Unflattens the resulting json and saves it to disk.
 
-The prompt is here.
+The prompt is [here](https://github.com/KevinColemanInc/i18n-translate-go/blob/main/main.go#L151).
 
 [0] - to minimize complexity and dependencies, I count characters instead of tokens
+
+### How well does it work?
+
+I had 2 native vietnamese speakers compare the automatic translation with the human translations. Both preferred the human translation, because the automated translation was too verbose and had tenses wrong. I updated the prompt to request it to "be concise."
 
 ## Known errors
 
