@@ -9,12 +9,16 @@ import (
 	"github.com/sashabaranov/go-openai/jsonschema"
 	"os"
 	"strings"
+	"sync"
 )
 
 func main() {
 	// Define flags for file path and language string
 	filePath := flag.String("file", "", "Path to the JSON file")
 	language := flag.String("lang", "", "Language string")
+	outputPath := flag.String("output", "", "output path")
+	model := flag.String("model", openai.GPT4Turbo, "model")
+	chunkSize := flag.Int("chunksize", 2000, "number of letters per chunk")
 	flag.Parse()
 
 	// Check if file path is provided
@@ -29,42 +33,67 @@ func main() {
 		os.Exit(1)
 	}
 
-	outputPath := flag.String("output", "output-"+*language+".json", "output path")
-	model := flag.String("model", openai.GPT4Turbo, "model")
-	chunkSize := flag.Int("chunksize", 2000, "number of letters per chunk")
+	if outputPath == nil || *outputPath == "" {
+		*outputPath = "output-" + *language + ".json"
+	}
 
 	// Use the file path and language string here
 	fmt.Println("File Path:", *filePath)
 	fmt.Println("Language:", *language)
 	fmt.Println("\nThis can take a few minutes b/c GPT4 is slow")
-
-	flattenedData := flattenJSON(open(*filePath), "")
+	out, err := open(*filePath)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	flattenedData := flattenJSON(out, "")
 	chunks := chunkKeys(flattenedData, *chunkSize)
 
 	allTranslated := make(map[string]string)
 	duplicateKeyCount := make([]string, 0)
-
+	locker := new(sync.Mutex)
 	chunkChan := chunkGenerator(chunks)
+	workerCount := 5
+	var wg sync.WaitGroup
+	workerPool := make(chan struct{}, workerCount)
+	progressCounter := 0
+	totalChunks := len(chunks)
+	fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	for chunk := range chunkChan {
-		translatedChunk, _ := translateString(chunk, *language, *model)
-
-		for k, v := range translatedChunk {
-			if _, ok := allTranslated[k]; !ok {
-				allTranslated[k] = v
-			} else {
-				duplicateKeyCount = append(duplicateKeyCount, k)
+		wg.Add(1)
+		go func(chunk map[string]string) {
+			defer wg.Done()
+			workerPool <- struct{}{}
+			defer func() {
+				<-workerPool
+			}()
+			translatedChunk, err := translateString(chunk, *language, *model)
+			if err != nil {
+				fmt.Printf(err.Error())
+				fmt.Printf("Translation error - you should restart this b/c the translations will not be complete.\n")
+				return
 			}
+			locker.Lock()
+			for k, v := range translatedChunk {
+				if _, ok := allTranslated[k]; !ok {
+					allTranslated[k] = v
+				} else {
+					duplicateKeyCount = append(duplicateKeyCount, k)
+				}
 
-		}
+			}
+			progressCounter += 1
+			locker.Unlock()
+			fmt.Printf("\rProgress: %d/%d\x1b[K", progressCounter, totalChunks)
+		}(chunk)
 	}
-
+	wg.Wait()
 	unflatMap := unflattenJSON(allTranslated)
 
 	unSquishedJSON, _ := json.Marshal(unflatMap)
 
 	save(unSquishedJSON, *outputPath)
 	fmt.Println("Saved result in:", *outputPath)
-
 }
 
 func chunkGenerator(chunks []map[string]string) <-chan map[string]string {
@@ -165,7 +194,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 	missingKeys := make([]string, 0)
 	for k, v := range translatedChunk {
 		if v == "" {
-			fmt.Println("missing value for key:", k)
+			fmt.Printf("missing value for key: %v. I recommend reducing the chunkSize and restarting the script.\n", k)
 			missingKeys = append(missingKeys, k)
 		}
 	}
@@ -199,21 +228,21 @@ func save(json []byte, outputPath string) {
 	os.WriteFile(outputPath, json, 0644)
 }
 
-func open(path string) map[string]interface{} {
+func open(path string) (map[string]interface{}, error) {
 	// Read the JSON content
 	bytes, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Println("Error reading file:", err)
-		return nil
+		return nil, err
 	}
 
 	// Unmarshal the JSON into a map[string]interface{}
 	var data map[string]interface{}
 	if err := json.Unmarshal(bytes, &data); err != nil {
 		fmt.Println("Error unmarshaling JSON:", err)
-		return nil
+		return nil, err
 	}
-	return data
+	return data, nil
 }
 
 func chunkKeys(data map[string]string, chunkSize int) []map[string]string {

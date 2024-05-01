@@ -1,12 +1,13 @@
 # Translate json files with GPT-4/OpenAI
 
 ```
-go install https://github.com/kevincolemaninc/i18n-translate@latest 
+go install https://github.com/kevincolemaninc/i18n-translate-go@latest 
 ```
 or just pull and run the project
 
 ```
-go run main.go -file "~/projects/rn-app/i18n/en.json" -lang vi
+$ export OPENAI_API_KEY=...
+$ go run main.go -file "~/projects/rn-app/i18n/en.json" -lang vi
 ```
 
 output directory: `output-{language}.json`
@@ -21,7 +22,42 @@ output directory: `output-{language}.json`
 | model     | name of the completion model. default is gpt-4-turbo                                                                                          |
 | chunksize | To ensure accurate translation and prevent skipping phrases, limit the number of letters translated per request. For common languages, 2000 letters are suitable, while for less common languages like Lao, opt for 500 letters. The default limit is 2000 letters.
 
-## features
-- [x] concurrency (default 3)
-- [x] multiple gpt models
+## features / roadmap
+
+- [x] concurrency (5 workers)
+- [x] support multiple gpt models
 - [ ] cache results (only update missing keys)
+- [ ] automatically check for blank or missing translations
+- [ ] retry blank or missing translations
+
+## Example output
+
+with 5 workers, chunksize of 1000, and 26,000 letters, this takes about 2 minutes
+
+```
+$ i18n-translate-go -file "./src/utils/i18n/en.json" -lang "korean" -output ko.json -model gpt-4-turbo -chunksize 1000
+
+File Path: ./src/utils/i18n/en.json
+Language: korean
+
+This can take a few minutes b/c GPT4 is slow
+Progress: 5/49
+Saved result in: ko.json
+```
+
+### How does it work?
+
+1. Flattens the json into a nested key structure: { "user": { "name": .. } } -> "user.name".
+2. Chunks the key/values by length of the keys in characters [0].
+3. Sends the chunks to completions API using function calling.
+4. Unflattens the resulting json and saves it to disk.
+
+The prompt is here.
+
+[0] - to minimize complexity and dependencies, I count characters instead of tokens
+
+## Known errors
+
+> Translation error - you should restart this b/c the translations will not be complete.
+
+If the chunkSize is too big and/or the language is in uncommon language (e.g. Lao), chatGPT doesn't translate all the strings you ask it.
