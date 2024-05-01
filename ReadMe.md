@@ -1,7 +1,8 @@
 # Translate json files with GPT-4/OpenAI
 
 ```
-go install github.com/kevincolemaninc/i18n-translate-go@latest
+$ go install github.com/kevincolemaninc/i18n-translate-go@latest
+$ i18n-translate-go -file "~/i18n/en.json" -lang "korean" -output ko.json -model gpt-4-turbo -chunksize 1000
 ```
 
 or just pull and run the project
