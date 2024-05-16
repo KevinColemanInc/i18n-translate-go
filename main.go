@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
+	"gopkg.in/yaml.v2"
+	"io/ioutil"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -17,8 +20,8 @@ func main() {
 	filePath := flag.String("file", "", "Path to the JSON file")
 	language := flag.String("lang", "", "Language string")
 	outputPath := flag.String("output", "", "output path")
-	model := flag.String("model", openai.GPT4Turbo, "model")
-	chunkSize := flag.Int("chunksize", 2000, "number of letters per chunk")
+	model := flag.String("model", "gpt-4o", "model")
+	chunkSize := flag.Int("chunksize", 500, "number of letters per chunk")
 	flag.Parse()
 
 	// Check if file path is provided
@@ -41,12 +44,24 @@ func main() {
 	fmt.Println("File Path:", *filePath)
 	fmt.Println("Language:", *language)
 	fmt.Println("\nThis can take a few minutes b/c GPT4 is slow")
-	out, err := open(*filePath)
-	if err != nil {
-		fmt.Println(err)
+	var out map[string]interface{}
+	var err error
+	ext := filepath.Ext(*filePath)
+	switch ext {
+	case ".yaml", ".yml":
+		out, err = openYAML(*filePath)
+	case ".json":
+		out, err = openJSON(*filePath)
+	default:
+		fmt.Errorf("unsupported file extension: %s", ext)
 		return
 	}
-	flattenedData := flattenJSON(out, "")
+
+	if err != nil {
+		fmt.Errorf(err.Error())
+		return
+	}
+	flattenedData := flatten(out, "")
 	chunks := chunkKeys(flattenedData, *chunkSize)
 
 	allTranslated := make(map[string]string)
@@ -89,10 +104,15 @@ func main() {
 	}
 	wg.Wait()
 	unflatMap := unflattenJSON(allTranslated)
+	var unSquished []byte
+	switch ext {
+	case ".yaml", ".yml":
+		unSquished, _ = yaml.Marshal(unflatMap)
+	case ".json":
+		unSquished, _ = json.Marshal(unflatMap)
+	}
 
-	unSquishedJSON, _ := json.Marshal(unflatMap)
-
-	save(unSquishedJSON, *outputPath)
+	save(unSquished, *outputPath)
 	fmt.Println("Saved result in:", *outputPath)
 }
 
@@ -228,7 +248,7 @@ func save(json []byte, outputPath string) {
 	os.WriteFile(outputPath, json, 0644)
 }
 
-func open(path string) (map[string]interface{}, error) {
+func openJSON(path string) (map[string]interface{}, error) {
 	// Read the JSON content
 	bytes, err := os.ReadFile(path)
 	if err != nil {
@@ -274,7 +294,7 @@ func chunkKeys(data map[string]string, chunkSize int) []map[string]string {
 	return chunks
 }
 
-func flattenJSON(data map[string]interface{}, prefix string) map[string]string {
+func flatten(data map[string]interface{}, prefix string) map[string]string {
 	flattened := make(map[string]string)
 
 	for key, value := range data {
@@ -286,7 +306,16 @@ func flattenJSON(data map[string]interface{}, prefix string) map[string]string {
 
 		// If the value is a nested object, recursively flatten it
 		if nested, ok := value.(map[string]interface{}); ok {
-			nestedFlattened := flattenJSON(nested, fullKey)
+			nestedFlattened := flatten(nested, fullKey)
+			for nestedKey, nestedValue := range nestedFlattened {
+				flattened[nestedKey] = nestedValue
+			}
+		} else if nested, ok := value.(map[interface{}]interface{}); ok {
+			stringNested := make(map[string]interface{})
+			for k, v := range nested {
+				stringNested[k.(string)] = v
+			}
+			nestedFlattened := flatten(stringNested, fullKey)
 			for nestedKey, nestedValue := range nestedFlattened {
 				flattened[nestedKey] = nestedValue
 			}
@@ -297,4 +326,20 @@ func flattenJSON(data map[string]interface{}, prefix string) map[string]string {
 	}
 
 	return flattened
+}
+
+// openYAML loads a YAML file into the provided structure
+func openYAML(filename string) (map[string]interface{}, error) {
+	var translations map[string]interface{}
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	err = yaml.Unmarshal(data, &translations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal YAML: %w", err)
+	}
+
+	return translations, nil
 }

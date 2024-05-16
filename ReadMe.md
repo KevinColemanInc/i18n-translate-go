@@ -28,6 +28,7 @@ output directory: `output-{language}.json`
 
 - [x] concurrency (5 workers)
 - [x] support multiple gpt models
+- [x] support json (i18n js) and yaml (i18n rails)
 - [ ] cache results (only update missing keys)
 - [ ] automatically check for blank or missing translations
 - [ ] retry blank or missing translations
@@ -67,3 +68,7 @@ I had 2 native vietnamese speakers compare the automatic translation with the hu
 > Translation error - you should restart this b/c the translations will not be complete.
 
 If the chunkSize is too big and/or the language is in uncommon language (e.g. Lao), chatGPT doesn't translate all the strings you ask it.
+
+> Failed to create completion as the model generated invalid Unicode output. Unfortunately, this can happen in rare situations. Consider reviewing your prompt or reducing the temperature of your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.
+
+Re-run the script and consider reducing the chunksize
