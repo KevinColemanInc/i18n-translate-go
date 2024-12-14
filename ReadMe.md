@@ -1,4 +1,4 @@
-# Translate json files with GPT-4/OpenAI
+# Translate json files with GPT-4o/OpenAI
 
 ```
 $ go install github.com/kevincolemaninc/i18n-translate-go@latest
@@ -36,7 +36,7 @@ output directory: `output-{language}.json`
 
 ## features / roadmap
 
-- [x] concurrency (5 workers)
+- [x] concurrency (3 workers)
 - [x] support multiple gpt models
 - [x] support json (i18n js) and yaml (i18n rails)
 - [x] support iOS Localization files
