@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -11,16 +13,18 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
 
 func main() {
 	// Define flags for file path and language string
-	filePath := flag.String("file", "", "Path to the JSON file")
+	filePath := flag.String("file", "", "Path to the *.json or *.Localizable strings file")
 	language := flag.String("lang", "", "Language string")
 	outputPath := flag.String("output", "", "output path")
-	model := flag.String("model", "gpt-4o", "model")
+	model := flag.String("model", "gpt-4o-mini", "model")
 	chunkSize := flag.Int("chunksize", 500, "number of letters per chunk")
 	flag.Parse()
 
@@ -43,7 +47,7 @@ func main() {
 	// Use the file path and language string here
 	fmt.Println("File Path:", *filePath)
 	fmt.Println("Language:", *language)
-	fmt.Println("\nThis can take a few minutes b/c GPT4 is slow")
+	fmt.Printf("\nThis can take a few minutes b/c %v is slow", model)
 	var out map[string]interface{}
 	var err error
 	ext := filepath.Ext(*filePath)
@@ -52,6 +56,8 @@ func main() {
 		out, err = openYAML(*filePath)
 	case ".json":
 		out, err = openJSON(*filePath)
+	case ".strings":
+		out, err = openStrings(*filePath)
 	default:
 		fmt.Errorf("unsupported file extension: %s", ext)
 		return
@@ -68,7 +74,7 @@ func main() {
 	duplicateKeyCount := make([]string, 0)
 	locker := new(sync.Mutex)
 	chunkChan := chunkGenerator(chunks)
-	workerCount := 5
+	workerCount := 3
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, workerCount)
 	progressCounter := 0
@@ -110,10 +116,12 @@ func main() {
 		unSquished, _ = yaml.Marshal(unflatMap)
 	case ".json":
 		unSquished, _ = json.Marshal(unflatMap)
+	case ".strings":
+		unSquished, _ = toStrings(allTranslated)
 	}
 
 	save(unSquished, *outputPath)
-	fmt.Println("Saved result in:", *outputPath)
+	fmt.Println("\n\nSaved result in:", *outputPath)
 }
 
 func chunkGenerator(chunks []map[string]string) <-chan map[string]string {
@@ -168,7 +176,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 	}
 
 	dialogue := []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "You will be provided key value pair English phrases, and your task is to translate the english values into concise " + targetLanguage + " and upload them. respond with json"},
+		{Role: openai.ChatMessageRoleSystem, Content: "You will be provided key value pair English phrases, and your task is to translate the english values into concise " + targetLanguage + " and upload them. The messages are for an localization for a mobile application. respond with json"},
 		{Role: openai.ChatMessageRoleUser, Content: input},
 	}
 
@@ -214,7 +222,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 	missingKeys := make([]string, 0)
 	for k, v := range translatedChunk {
 		if v == "" {
-			fmt.Printf("missing value for key: %v. I recommend reducing the chunkSize and restarting the script.\n", k)
+			fmt.Printf("\nmissing value for key: %v. I recommend reducing the chunkSize and restarting the script.\n", k)
 			missingKeys = append(missingKeys, k)
 		}
 	}
@@ -245,9 +253,63 @@ func unflattenJSON(flattened map[string]string) map[string]interface{} {
 }
 
 func save(json []byte, outputPath string) {
-	os.WriteFile(outputPath, json, 0644)
+
+	// Create the directory if it doesn't exist
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		fmt.Printf("Error creating directory: %v\n", err)
+		return
+	}
+
+	err := os.WriteFile(outputPath, json, 0644)
+	if err != nil {
+		fmt.Printf("Error writing to output file: %v\n", err)
+	}
 }
 
+// openStrings reads a .strings file and converts it to a map[string]string
+func openStrings(path string) (map[string]interface{}, error) {
+	// Open the file
+	file, err := os.Open(path)
+	if err != nil {
+		fmt.Println("\nError opening file:", err)
+		return nil, err
+	}
+	defer file.Close()
+
+	// Initialize the map to store the key-value pairs
+	data := make(map[string]interface{})
+
+	// Regular expressions to match key-value pairs and comments
+	reKeyValue := regexp.MustCompile(`^\s*"(.*?)"\s*=\s*"(.*?)"\s*;`)
+	reComment := regexp.MustCompile(`^\s*(//|/\*|\*|--).*`)
+
+	// Scanner to read the file line by line
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip comments
+		if reComment.MatchString(line) {
+			continue
+		}
+
+		// Match key-value pairs
+		matches := reKeyValue.FindStringSubmatch(line)
+		if len(matches) == 3 {
+			key := matches[1]
+			value := matches[2]
+			data[key] = value
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading file:", err)
+		return nil, err
+	}
+
+	return data, nil
+}
 func openJSON(path string) (map[string]interface{}, error) {
 	// Read the JSON content
 	bytes, err := os.ReadFile(path)
@@ -294,7 +356,49 @@ func chunkKeys(data map[string]string, chunkSize int) []map[string]string {
 	return chunks
 }
 
+// toStrings converts the data object to a strings file type byte array
+func toStrings(data map[string]string) ([]byte, error) {
+	// Create a buffer to hold the output
+	var buffer bytes.Buffer
+
+	// Sort the keys for consistent output
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	// Write each key-value pair to the buffer
+	for _, key := range keys {
+		value := data[key]
+		_, err := buffer.WriteString(fmt.Sprintf("\"%s\" = \"%s\";\n", key, value))
+		if err != nil {
+			return nil, fmt.Errorf("error writing to buffer: %v", err)
+		}
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func toStringMap(m map[string]interface{}) map[string]string {
+	stringMap := make(map[string]string)
+	for k, v := range m {
+		if sv, ok := v.(string); !ok {
+			return stringMap
+		} else {
+			stringMap[k] = sv
+		}
+	}
+	return stringMap
+}
+
 func flatten(data map[string]interface{}, prefix string) map[string]string {
+	stringMap := toStringMap(data)
+
+	if len(stringMap) == len(data) {
+		return stringMap
+	}
+
 	flattened := make(map[string]string)
 
 	for key, value := range data {

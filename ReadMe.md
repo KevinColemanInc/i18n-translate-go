@@ -2,7 +2,7 @@
 
 ```
 $ go install github.com/kevincolemaninc/i18n-translate-go@latest
-$ i18n-translate-go -file "~/i18n/en.json" -lang "korean" -output ko.json -model gpt-4-turbo -chunksize 1000
+$ i18n-translate-go -file "~/i18n/en.json" -lang "korean" -output ko.json -model gpt-4o-mini -chunksize 1000
 ```
 
 or just pull and run the project
@@ -11,6 +11,16 @@ or just pull and run the project
 $ export OPENAI_API_KEY=...
 $ go run main.go -file "~/projects/rn-app/i18n/en.json" -lang vi
 ```
+
+or for iOS Localized strings
+```
+$ go run main.go -chunksize 25 \
+  -file "~/projects/698-expat-ios/698-expat-ios/Resources/Localizable/en.lproj/Localizable.strings" \
+  -model gpt-4o-mini \
+  -lang vi \
+  -output "~/projects/698-expat-ios/698-expat-ios/Resources/Localizable/vi.lproj/Localizable.strings"
+```
+
 
 output directory: `output-{language}.json`
 
@@ -29,6 +39,7 @@ output directory: `output-{language}.json`
 - [x] concurrency (5 workers)
 - [x] support multiple gpt models
 - [x] support json (i18n js) and yaml (i18n rails)
+- [x] support iOS Localization files
 - [ ] cache results (only update missing keys)
 - [ ] automatically check for blank or missing translations
 - [ ] retry blank or missing translations
@@ -43,7 +54,7 @@ $ i18n-translate-go -file "./src/utils/i18n/en.json" -lang "korean" -output ko.j
 File Path: ./src/utils/i18n/en.json
 Language: korean
 
-This can take a few minutes b/c GPT4 is slow
+This can take a few minutes b/c model is slow
 Progress: 5/49
 Saved result in: ko.json
 ```
@@ -72,3 +83,7 @@ If the chunkSize is too big and/or the language is in uncommon language (e.g. La
 > Failed to create completion as the model generated invalid Unicode output. Unfortunately, this can happen in rare situations. Consider reviewing your prompt or reducing the temperature of your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.
 
 Re-run the script and consider reducing the chunksize
+
+> Rate limit reached 
+
+The number of concurrent requests is 3. This should be fine for most use-cases, but if it isn't the value is hard coded.
