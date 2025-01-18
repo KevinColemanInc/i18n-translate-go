@@ -9,16 +9,16 @@ or just pull and run the project
 
 ```
 $ export OPENAI_API_KEY=...
-$ go run main.go -file "~/projects/rn-app/i18n/en.json" -lang vi
+$ go run main.go -file "/Users/kevin/projects/avo-native/i18n/en.json" -lang vi
 ```
 
 or for iOS Localized strings
 ```
 $ go run main.go -chunksize 25 \
-  -file "~/projects/698-expat-ios/698-expat-ios/Resources/Localizable/en.lproj/Localizable.strings" \
-  -model gpt-4o-mini \
-  -lang vi \
-  -output "~/projects/698-expat-ios/698-expat-ios/Resources/Localizable/vi.lproj/Localizable.strings"
+  -file "/Users/kevin/projects/698-expat-ios/698-expat-ios/Resources/Localizable/en.lproj/Localizable.strings" \
+  -model gpt-4o \
+  -lang laos \
+  -output "/Users/kevin/projects/698-expat-ios/698-expat-ios/Resources/Localizable/lo.lproj/Localizable.strings"
 ```
 
 
@@ -26,13 +26,14 @@ output directory: `output-{language}.json`
 
 ## flags
 
-| flag      | description                                                                                                                                                                                                                                                         |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| file      | path of the source english file                                                                                                                                                                                                                                     |
-| lang      | language you want to translate to, (this is sent to gpt-4 and doesn't and shouldn't be a language abbreciation (vietnamese is better than vi)                                                                                                                       |
-| output    | destination of the json file. default is `output-{lang}.json`                                                                                                                                                                                                       |
-| model     | name of the completion model. default is gpt-4-turbo                                                                                                                                                                                                                |
+| flag      | description                                                                                                                                                                                                                                                        |
+|-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| file      | path of the source english file                                                                                                                                                                                                                                    |
+| lang      | language you want to translate to, (this is sent to gpt-4 and doesn't and shouldn't be a language abbreciation (vietnamese is better than vi)                                                                                                                      |
+| output    | destination of the json file. default is `output-{lang}.json`                                                                                                                                                                                                      |
+| model     | name of the completion model. default is gpt-4-turbo                                                                                                                                                                                                               |
 | chunksize | To ensure accurate translation and prevent skipping phrases, limit the number of letters translated per request. For common languages, 2000 letters are suitable, while for less common languages like Lao, opt for 500 letters. The default limit is 2000 letters. |
+| force     | Retranslate the file                                                                                                                                                                                                                                               |
 
 ## features / roadmap
 
@@ -40,8 +41,8 @@ output directory: `output-{language}.json`
 - [x] support multiple gpt models
 - [x] support json (i18n js) and yaml (i18n rails)
 - [x] support iOS Localization files
-- [ ] cache results (only update missing keys)
-- [ ] automatically check for blank or missing translations
+- [x] cache results (only update missing keys); enable "force" flag to retranslate everything
+- [x] automatically check for blank or missing translations
 - [ ] retry blank or missing translations
 
 ## Example output

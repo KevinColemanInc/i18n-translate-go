@@ -10,19 +10,37 @@ import (
 	"github.com/sashabaranov/go-openai"
 	"github.com/sashabaranov/go-openai/jsonschema"
 	"gopkg.in/yaml.v2"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
+
+var debug *bool
+
+const colorRed = "\033[0;31m"
+const colorGreen = "\033[0;32m"
+const colorNone = "\033[0m"
+
+func logInfo(message, content string) {
+	if debug != nil && *debug {
+		fmt.Println(colorGreen, "[Info]", colorNone, message+": ", content)
+	}
+}
+
+func logError(message, content string) {
+	fmt.Println(colorRed, "[Error]", colorNone, message+": ", content)
+}
 
 func main() {
 	// Define flags for file path and language string
 	filePath := flag.String("file", "", "Path to the *.json or *.Localizable strings file")
 	language := flag.String("lang", "", "Language string")
+	force := flag.Bool("force", false, "forces all strings to be translated")
+	debug = flag.Bool("debug", false, "writes debug logs")
 	outputPath := flag.String("output", "", "output path")
 	model := flag.String("model", "gpt-4o-mini", "model")
 	chunkSize := flag.Int("chunksize", 500, "number of letters per chunk")
@@ -30,13 +48,13 @@ func main() {
 
 	// Check if file path is provided
 	if *filePath == "" {
-		fmt.Println("Please provide a file path using -file flag")
+		logError("filePath", "Please provide a file path using -file flag")
 		os.Exit(1)
 	}
 
 	// Check if language string is provided
 	if *language == "" {
-		fmt.Println("Please provide a language string using -lang flag")
+		logError("language", "Please provide a language string using -lang flag")
 		os.Exit(1)
 	}
 
@@ -45,9 +63,8 @@ func main() {
 	}
 
 	// Use the file path and language string here
-	fmt.Println("File Path:", *filePath)
-	fmt.Println("Language:", *language)
-	fmt.Printf("\nThis can take a few minutes b/c %v is slow", model)
+	logInfo("File Path", *filePath)
+	logInfo("Language", *language)
 	var out map[string]interface{}
 	var err error
 	ext := filepath.Ext(*filePath)
@@ -59,26 +76,65 @@ func main() {
 	case ".strings":
 		out, err = openStrings(*filePath)
 	default:
-		fmt.Errorf("unsupported file extension: %s", ext)
+		logError("filePath", fmt.Errorf("unsupported file extension: %s", ext).Error())
 		return
 	}
 
 	if err != nil {
-		fmt.Errorf(err.Error())
+		logError("open", err.Error())
 		return
 	}
 	flattenedData := flatten(out, "")
+	// inspect the output file for already translated keys
+
+	isOutputPathExist := false
+	if _, err := os.Stat(*outputPath); err == nil {
+		isOutputPathExist = true
+	}
+	allTranslated := make(map[string]string)
+	existingOutput := make(map[string]interface{})
+	if !(*force) && isOutputPathExist {
+		counter := 0
+		ext := filepath.Ext(*outputPath)
+		switch ext {
+		case ".yaml", ".yml":
+			existingOutput, err = openYAML(*outputPath)
+		case ".json":
+			existingOutput, err = openJSON(*outputPath)
+		case ".strings":
+			existingOutput, err = openStrings(*outputPath)
+		default:
+			err := fmt.Errorf("unsupported file extension: %s", ext)
+			logError("open", err.Error())
+			return
+		}
+		alreadyTranslated := flatten(existingOutput, "")
+		var keys []string
+		for k := range alreadyTranslated {
+			keys = append(keys, k)
+		}
+		for _, k := range keys {
+			counter += 1
+			delete(flattenedData, k)
+			allTranslated[k] = alreadyTranslated[k]
+		}
+		logInfo("Skipping keys", strconv.Itoa(counter))
+	} else {
+		logInfo("Force", "enabled")
+	}
+
 	chunks := chunkKeys(flattenedData, *chunkSize)
 
-	allTranslated := make(map[string]string)
 	duplicateKeyCount := make([]string, 0)
 	locker := new(sync.Mutex)
 	chunkChan := chunkGenerator(chunks)
-	workerCount := 3
+	workerCount := 2
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, workerCount)
 	progressCounter := 0
 	totalChunks := len(chunks)
+	logInfo("Keys to translate", strconv.Itoa(len(flattenedData)))
+	fmt.Printf("\nThis can take a few minutes b/c %v is slow", *model)
 	fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	for chunk := range chunkChan {
 		wg.Add(1)
@@ -90,8 +146,7 @@ func main() {
 			}()
 			translatedChunk, err := translateString(chunk, *language, *model)
 			if err != nil {
-				fmt.Printf(err.Error())
-				fmt.Printf("Translation error - you should restart this b/c the translations will not be complete.\n")
+				logError("translateString", err.Error()+"\n You should restart this b/c the translations will not be complete.")
 				return
 			}
 			locker.Lock()
@@ -161,6 +216,9 @@ func chunkToParams(chunk map[string]string) jsonschema.Definition {
 }
 
 func translateString(chunk map[string]string, targetLanguage string, model string) (map[string]string, error) {
+	if len(chunk) == 0 {
+		return nil, nil
+	}
 	input := chunkToString(chunk)
 	params := chunkToParams(chunk)
 	client := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
@@ -204,7 +262,10 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 		msg := choice.Message
 		for _, toolCall := range msg.ToolCalls {
 			var params map[string]string
-			json.Unmarshal([]byte(toolCall.Function.Arguments), &params)
+			err := json.Unmarshal([]byte(toolCall.Function.Arguments), &params)
+			if err != nil {
+				logError("translateString", err.Error())
+			}
 
 			for k, v := range params {
 				totalCalls += 1
@@ -212,7 +273,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 					foundUniqueKeys += 1
 					translatedChunk[k] = v
 				} else if chunkV != "" {
-					fmt.Println("unplanned key:", k)
+					logError("unexpected key from llm", "The LLM returned a translation that was not expected. You may need to re-run this.")
 					unplannedKeys = append(unplannedKeys, k)
 				}
 			}
@@ -222,7 +283,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 	missingKeys := make([]string, 0)
 	for k, v := range translatedChunk {
 		if v == "" {
-			fmt.Printf("\nmissing value for key: %v. I recommend reducing the chunkSize and restarting the script.\n", k)
+			logError("missing translations", fmt.Sprintf("missing value for key: %v. Reduce the chunkSize and restarting the script.", k))
 			missingKeys = append(missingKeys, k)
 		}
 	}
@@ -257,13 +318,13 @@ func save(json []byte, outputPath string) {
 	// Create the directory if it doesn't exist
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		fmt.Printf("Error creating directory: %v\n", err)
+		logError("save", fmt.Sprintf("Error creating directory: %v\n", err))
 		return
 	}
 
 	err := os.WriteFile(outputPath, json, 0644)
 	if err != nil {
-		fmt.Printf("Error writing to output file: %v\n", err)
+		logError("save", fmt.Sprintf("writing to file: %v\n", err))
 	}
 }
 
@@ -272,7 +333,7 @@ func openStrings(path string) (map[string]interface{}, error) {
 	// Open the file
 	file, err := os.Open(path)
 	if err != nil {
-		fmt.Println("\nError opening file:", err)
+		logError("openStrings", fmt.Sprintf("opening file: %v\n", err))
 		return nil, err
 	}
 	defer file.Close()
@@ -304,7 +365,8 @@ func openStrings(path string) (map[string]interface{}, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading file:", err)
+		logError("openStrings", fmt.Sprintf("opening reading file: %v\n", err))
+
 		return nil, err
 	}
 
@@ -314,14 +376,12 @@ func openJSON(path string) (map[string]interface{}, error) {
 	// Read the JSON content
 	bytes, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println("Error reading file:", err)
 		return nil, err
 	}
 
 	// Unmarshal the JSON into a map[string]interface{}
 	var data map[string]interface{}
 	if err := json.Unmarshal(bytes, &data); err != nil {
-		fmt.Println("Error unmarshaling JSON:", err)
 		return nil, err
 	}
 	return data, nil
@@ -435,7 +495,7 @@ func flatten(data map[string]interface{}, prefix string) map[string]string {
 // openYAML loads a YAML file into the provided structure
 func openYAML(filename string) (map[string]interface{}, error) {
 	var translations map[string]interface{}
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
