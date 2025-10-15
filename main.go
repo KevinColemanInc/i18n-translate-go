@@ -401,8 +401,11 @@ func translateToLanguage(source map[string]interface{}, outputPath string, sourc
 	fmt.Printf("\nTranslating %s into %s\n", sourceLanguage, targetLanguage)
 	if totalChunks > 0 {
 		fmt.Printf("This can take a few minutes b/c %v is slow", model)
+		fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
+	} else {
+		fmt.Println("Warning: No strings need translation. The destination file may already contain all keys or the source data might be empty.")
+		fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	}
-	fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	for _, chunk := range chunks {
 		translatedChunk, err := translateString(chunk, sourceLanguage, targetLanguage, model)
 		if err != nil {
