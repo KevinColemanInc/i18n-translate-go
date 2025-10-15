@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var debug *bool
@@ -396,11 +395,6 @@ func translateToLanguage(source map[string]interface{}, outputPath string, sourc
 	chunks := chunkKeys(flattenedData, chunkSize)
 
 	duplicateKeyCount := make([]string, 0)
-	locker := new(sync.Mutex)
-	chunkChan := chunkGenerator(chunks)
-	workerCount := 2
-	var wg sync.WaitGroup
-	workerPool := make(chan struct{}, workerCount)
 	progressCounter := 0
 	totalChunks := len(chunks)
 	logInfo("Keys to translate", strconv.Itoa(len(flattenedData)))
@@ -409,34 +403,23 @@ func translateToLanguage(source map[string]interface{}, outputPath string, sourc
 		fmt.Printf("This can take a few minutes b/c %v is slow", model)
 	}
 	fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
-	for chunk := range chunkChan {
-		wg.Add(1)
-		go func(chunk map[string]string) {
-			defer wg.Done()
-			workerPool <- struct{}{}
-			defer func() {
-				<-workerPool
-			}()
-			translatedChunk, err := translateString(chunk, sourceLanguage, targetLanguage, model)
-			if err != nil {
-				logError("translateString", err.Error()+"\n You should restart this b/c the translations will not be complete.")
-				return
+	for _, chunk := range chunks {
+		translatedChunk, err := translateString(chunk, sourceLanguage, targetLanguage, model)
+		if err != nil {
+			logError("translateString", err.Error()+"\n Stopping translation because the translations cannot continue without this chunk.")
+			return err
+		}
+		for k, v := range translatedChunk {
+			if _, ok := allTranslated[k]; !ok {
+				allTranslated[k] = v
+			} else {
+				duplicateKeyCount = append(duplicateKeyCount, k)
 			}
-			locker.Lock()
-			for k, v := range translatedChunk {
-				if _, ok := allTranslated[k]; !ok {
-					allTranslated[k] = v
-				} else {
-					duplicateKeyCount = append(duplicateKeyCount, k)
-				}
 
-			}
-			progressCounter += 1
-			locker.Unlock()
-			fmt.Printf("\rProgress: %d/%d\x1b[K", progressCounter, totalChunks)
-		}(chunk)
+		}
+		progressCounter += 1
+		fmt.Printf("\rProgress: %d/%d\x1b[K", progressCounter, totalChunks)
 	}
-	wg.Wait()
 	unflatMap := unflattenJSON(allTranslated)
 	var unSquished []byte
 	outputExt := filepath.Ext(outputPath)
@@ -516,6 +499,7 @@ func main() {
 		output := buildOutputPath(lang, *outputPath, ext, iosRoot, baseFilePath)
 		if err := translateToLanguage(sourceData, output, sourceLanguageName, lang, *model, *chunkSize, *force); err != nil {
 			logError("translate", err.Error())
+			os.Exit(1)
 		}
 	}
 }
