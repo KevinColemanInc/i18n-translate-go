@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/sashabaranov/go-openai"
@@ -170,6 +171,38 @@ func logInfo(message, content string) {
 
 func logError(message, content string) {
 	fmt.Println(colorRed, "[Error]", colorNone, message+": ", content)
+}
+
+func requireAPIKey() (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("OPENAI_API_KEY is not set. Set it to a valid OpenAI API key before running the translator.")
+	}
+
+	return apiKey, nil
+}
+
+func formatOpenAIError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.HTTPStatusCode {
+		case 401:
+			return fmt.Errorf("OpenAI rejected the request (401 Unauthorized). Verify that OPENAI_API_KEY is correct and has access to the selected model.")
+		case 429:
+			return fmt.Errorf("OpenAI rejected the request (429 Too Many Requests). You may have hit the rate limit or exceeded your quota; wait a bit or check your billing plan.")
+		default:
+			if apiErr.Message != "" {
+				return fmt.Errorf("OpenAI API error (%d): %s", apiErr.HTTPStatusCode, apiErr.Message)
+			}
+			return fmt.Errorf("OpenAI API error (%d)", apiErr.HTTPStatusCode)
+		}
+	}
+
+	return err
 }
 
 func friendlyLanguageName(code string) string {
@@ -549,7 +582,11 @@ func translateString(chunk map[string]string, sourceLanguage string, targetLangu
 	}
 	input := chunkToString(chunk)
 	params := chunkToParams(chunk)
-	client := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+	apiKey, err := requireAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	client := openai.NewClient(apiKey)
 
 	f := openai.FunctionDefinition{
 		Name:        "upload",
@@ -573,10 +610,11 @@ func translateString(chunk map[string]string, sourceLanguage string, targetLangu
 			Tools:    []openai.Tool{t},
 		},
 	)
-	if err != nil || len(resp.Choices) != 1 {
-		fmt.Printf("Completion error: err:%v len(choices):%v\n", err,
-			len(resp.Choices))
-		return nil, err
+	if err != nil {
+		return nil, formatOpenAIError(err)
+	}
+	if len(resp.Choices) != 1 {
+		return nil, fmt.Errorf("unexpected number of choices from OpenAI: %d", len(resp.Choices))
 	}
 	translatedChunk := make(map[string]string, len(chunk))
 	for k, _ := range chunk {
