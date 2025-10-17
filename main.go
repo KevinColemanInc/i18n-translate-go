@@ -169,8 +169,19 @@ func logInfo(message, content string) {
 	}
 }
 
-func logError(message, content string) {
-	fmt.Println(colorRed, "[Error]", colorNone, message+": ", content)
+func logError(message string, lines ...string) {
+	fmt.Printf("%s[Error]%s %s\n", colorRed, colorNone, message)
+	if len(lines) == 0 {
+		return
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		fmt.Printf("  %s\n", trimmed)
+	}
 }
 
 func requireAPIKey() (string, error) {
@@ -200,6 +211,14 @@ func formatOpenAIError(err error) error {
 			}
 			return fmt.Errorf("OpenAI API error (%d)", apiErr.HTTPStatusCode)
 		}
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "status code: 401") {
+		return fmt.Errorf("OpenAI rejected the request (401 Unauthorized). Verify that OPENAI_API_KEY is correct and has access to the selected model.")
+	}
+	if strings.Contains(msg, "status code: 429") {
+		return fmt.Errorf("OpenAI rejected the request (429 Too Many Requests). You may have hit the rate limit or exceeded your quota; wait a bit or check your billing plan.")
 	}
 
 	return err
@@ -439,11 +458,21 @@ func translateToLanguage(source map[string]interface{}, outputPath string, sourc
 		fmt.Println("Warning: No strings need translation. The destination file may already contain all keys or the source data might be empty.")
 		fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	}
-	for _, chunk := range chunks {
+	for idx, chunk := range chunks {
 		translatedChunk, err := translateString(chunk, sourceLanguage, targetLanguage, model)
 		if err != nil {
-			logError("translateString", err.Error()+"\n Stopping translation because the translations cannot continue without this chunk.")
-			return err
+			fmt.Printf("\rProgress: %d/%d\x1b[K\n", progressCounter, totalChunks)
+			friendly := strings.TrimSpace(err.Error())
+			lines := make([]string, 0, 3)
+			if friendly != "" {
+				lines = append(lines, friendly)
+			}
+			lines = append(lines,
+				fmt.Sprintf("Chunk %d of %d failed while translating %s.", idx+1, totalChunks, targetLanguage),
+				"The translator stopped before finishing this language. Please fix the issue and rerun.",
+			)
+			logError("translateString", lines...)
+			return fmt.Errorf("translation halted after %d/%d chunks: %w", progressCounter, totalChunks, err)
 		}
 		for k, v := range translatedChunk {
 			if _, ok := allTranslated[k]; !ok {
@@ -684,13 +713,13 @@ func save(json []byte, outputPath string) {
 	// Create the directory if it doesn't exist
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		logError("save", fmt.Sprintf("Error creating directory: %v\n", err))
+		logError("save", fmt.Sprintf("Error creating directory: %v", err))
 		return
 	}
 
 	err := os.WriteFile(outputPath, json, 0644)
 	if err != nil {
-		logError("save", fmt.Sprintf("writing to file: %v\n", err))
+		logError("save", fmt.Sprintf("writing to file: %v", err))
 	}
 }
 
@@ -699,7 +728,7 @@ func openStrings(path string) (map[string]interface{}, error) {
 	// Open the file
 	file, err := os.Open(path)
 	if err != nil {
-		logError("openStrings", fmt.Sprintf("opening file: %v\n", err))
+		logError("openStrings", fmt.Sprintf("opening file: %v", err))
 		return nil, err
 	}
 	defer file.Close()
@@ -731,7 +760,7 @@ func openStrings(path string) (map[string]interface{}, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		logError("openStrings", fmt.Sprintf("opening reading file: %v\n", err))
+		logError("openStrings", fmt.Sprintf("opening reading file: %v", err))
 
 		return nil, err
 	}
