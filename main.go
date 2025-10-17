@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/sashabaranov/go-openai"
@@ -16,7 +17,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var debug *bool
@@ -25,88 +25,409 @@ const colorRed = "\033[0;31m"
 const colorGreen = "\033[0;32m"
 const colorNone = "\033[0m"
 
+var friendlyLanguageAliases = map[string]string{
+	"":           "English",
+	"en":         "English",
+	"eng":        "English",
+	"english":    "English",
+	"es":         "Spanish",
+	"spa":        "Spanish",
+	"spanish":    "Spanish",
+	"fr":         "French",
+	"fra":        "French",
+	"fre":        "French",
+	"french":     "French",
+	"de":         "German",
+	"deu":        "German",
+	"ger":        "German",
+	"german":     "German",
+	"it":         "Italian",
+	"ita":        "Italian",
+	"italian":    "Italian",
+	"pt":         "Portuguese",
+	"por":        "Portuguese",
+	"portuguese": "Portuguese",
+	"pt-br":      "Brazilian Portuguese",
+	"pt_br":      "Brazilian Portuguese",
+	"ja":         "Japanese",
+	"jpn":        "Japanese",
+	"japanese":   "Japanese",
+	"ko":         "Korean",
+	"kor":        "Korean",
+	"korean":     "Korean",
+	"zh":         "Chinese",
+	"zho":        "Chinese",
+	"chi":        "Chinese",
+	"zh-hans":    "Chinese (Simplified)",
+	"zh_cn":      "Chinese (Simplified)",
+	"zh-cn":      "Chinese (Simplified)",
+	"zh_hans":    "Chinese (Simplified)",
+	"zh-hant":    "Chinese (Traditional)",
+	"zh_tw":      "Chinese (Traditional)",
+	"zh-tw":      "Chinese (Traditional)",
+	"zh_hant":    "Chinese (Traditional)",
+	"ar":         "Arabic",
+	"ara":        "Arabic",
+	"arabic":     "Arabic",
+	"bg":         "Bulgarian",
+	"bul":        "Bulgarian",
+	"bulgarian":  "Bulgarian",
+	"ca":         "Catalan",
+	"cat":        "Catalan",
+	"catalan":    "Catalan",
+	"cs":         "Czech",
+	"ces":        "Czech",
+	"cze":        "Czech",
+	"czech":      "Czech",
+	"da":         "Danish",
+	"dan":        "Danish",
+	"danish":     "Danish",
+	"nl":         "Dutch",
+	"nld":        "Dutch",
+	"dut":        "Dutch",
+	"dutch":      "Dutch",
+	"et":         "Estonian",
+	"est":        "Estonian",
+	"estonian":   "Estonian",
+	"fi":         "Finnish",
+	"fin":        "Finnish",
+	"finnish":    "Finnish",
+	"el":         "Greek",
+	"ell":        "Greek",
+	"greek":      "Greek",
+	"he":         "Hebrew",
+	"heb":        "Hebrew",
+	"hebrew":     "Hebrew",
+	"hi":         "Hindi",
+	"hin":        "Hindi",
+	"hindi":      "Hindi",
+	"hr":         "Croatian",
+	"hrv":        "Croatian",
+	"croatian":   "Croatian",
+	"hu":         "Hungarian",
+	"hun":        "Hungarian",
+	"hungarian":  "Hungarian",
+	"id":         "Indonesian",
+	"ind":        "Indonesian",
+	"indonesian": "Indonesian",
+	"km":         "Khmer",
+	"khm":        "Khmer",
+	"khmer":      "Khmer",
+	"lo":         "Lao",
+	"lao":        "Lao",
+	"laos":       "Lao",
+	"lt":         "Lithuanian",
+	"lit":        "Lithuanian",
+	"lithuanian": "Lithuanian",
+	"lv":         "Latvian",
+	"lav":        "Latvian",
+	"latvian":    "Latvian",
+	"ms":         "Malay",
+	"msa":        "Malay",
+	"malay":      "Malay",
+	"nb":         "Norwegian Bokmål",
+	"nob":        "Norwegian Bokmål",
+	"no":         "Norwegian",
+	"nor":        "Norwegian",
+	"norwegian":  "Norwegian",
+	"pl":         "Polish",
+	"pol":        "Polish",
+	"polish":     "Polish",
+	"ro":         "Romanian",
+	"ron":        "Romanian",
+	"rum":        "Romanian",
+	"romanian":   "Romanian",
+	"ru":         "Russian",
+	"rus":        "Russian",
+	"russian":    "Russian",
+	"sk":         "Slovak",
+	"slk":        "Slovak",
+	"slovak":     "Slovak",
+	"sl":         "Slovenian",
+	"slv":        "Slovenian",
+	"slovenian":  "Slovenian",
+	"sv":         "Swedish",
+	"swe":        "Swedish",
+	"swedish":    "Swedish",
+	"th":         "Thai",
+	"tha":        "Thai",
+	"thai":       "Thai",
+	"tr":         "Turkish",
+	"tur":        "Turkish",
+	"turkish":    "Turkish",
+	"uk":         "Ukrainian",
+	"ukr":        "Ukrainian",
+	"ukrainian":  "Ukrainian",
+	"vi":         "Vietnamese",
+	"vie":        "Vietnamese",
+	"vietnamese": "Vietnamese",
+}
+
 func logInfo(message, content string) {
 	if debug != nil && *debug {
 		fmt.Println(colorGreen, "[Info]", colorNone, message+": ", content)
 	}
 }
 
-func logError(message, content string) {
-	fmt.Println(colorRed, "[Error]", colorNone, message+": ", content)
+func logError(message string, lines ...string) {
+	fmt.Printf("%s[Error]%s %s\n", colorRed, colorNone, message)
+	if len(lines) == 0 {
+		return
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		fmt.Printf("  %s\n", trimmed)
+	}
 }
 
-func main() {
-	// Define flags for file path and language string
-	filePath := flag.String("file", "", "Path to the *.json or *.Localizable strings file")
-	language := flag.String("lang", "", "Language string")
-	force := flag.Bool("force", false, "forces all strings to be translated")
-	debug = flag.Bool("debug", false, "writes debug logs")
-	outputPath := flag.String("output", "", "output path")
-	model := flag.String("model", "gpt-4o-mini", "model")
-	chunkSize := flag.Int("chunksize", 500, "number of letters per chunk")
-	flag.Parse()
-
-	// Check if file path is provided
-	if *filePath == "" {
-		logError("filePath", "Please provide a file path using -file flag")
-		os.Exit(1)
+func requireAPIKey() (string, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
+	if apiKey == "" {
+		return "", fmt.Errorf("OPENAI_API_KEY is not set. Set it to a valid OpenAI API key before running the translator.")
 	}
 
-	// Check if language string is provided
-	if *language == "" {
-		logError("language", "Please provide a language string using -lang flag")
-		os.Exit(1)
+	return apiKey, nil
+}
+
+func formatOpenAIError(err error) error {
+	if err == nil {
+		return nil
 	}
 
-	if outputPath == nil || *outputPath == "" {
-		*outputPath = "output-" + *language + ".json"
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.HTTPStatusCode {
+		case 401:
+			return fmt.Errorf("OpenAI rejected the request (401 Unauthorized). Verify that OPENAI_API_KEY is correct and has access to the selected model.")
+		case 429:
+			return fmt.Errorf("OpenAI rejected the request (429 Too Many Requests). You may have hit the rate limit or exceeded your quota; wait a bit or check your billing plan.")
+		default:
+			if apiErr.Message != "" {
+				return fmt.Errorf("OpenAI API error (%d): %s", apiErr.HTTPStatusCode, apiErr.Message)
+			}
+			return fmt.Errorf("OpenAI API error (%d)", apiErr.HTTPStatusCode)
+		}
 	}
 
-	// Use the file path and language string here
-	logInfo("File Path", *filePath)
-	logInfo("Language", *language)
-	var out map[string]interface{}
-	var err error
-	ext := filepath.Ext(*filePath)
+	msg := err.Error()
+	if strings.Contains(msg, "status code: 401") {
+		return fmt.Errorf("OpenAI rejected the request (401 Unauthorized). Verify that OPENAI_API_KEY is correct and has access to the selected model.")
+	}
+	if strings.Contains(msg, "status code: 429") {
+		return fmt.Errorf("OpenAI rejected the request (429 Too Many Requests). You may have hit the rate limit or exceeded your quota; wait a bit or check your billing plan.")
+	}
+
+	return err
+}
+
+func friendlyLanguageName(code string) string {
+	normalized := strings.ToLower(strings.TrimSpace(code))
+
+	if friendly, ok := friendlyLanguageAliases[normalized]; ok {
+		return friendly
+	}
+
+	return strings.TrimSpace(code)
+}
+
+func parseLanguages(raw string) []string {
+	parts := strings.Split(raw, ",")
+	languages := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			languages = append(languages, trimmed)
+		}
+	}
+	return languages
+}
+
+func findStringsFileInDir(dirPath string) (string, error) {
+	defaultFile := filepath.Join(dirPath, "Localizable.strings")
+	if _, err := os.Stat(defaultFile); err == nil {
+		return defaultFile, nil
+	}
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return "", err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if filepath.Ext(entry.Name()) == ".strings" {
+			return filepath.Join(dirPath, entry.Name()), nil
+		}
+	}
+
+	return "", fmt.Errorf("no .strings file found in %s", dirPath)
+}
+
+func candidatePathForLang(rootDir, lang string) (string, string, error) {
+	normalized := strings.TrimSpace(strings.TrimSuffix(lang, ".lproj"))
+	if normalized == "" {
+		return "", "", fmt.Errorf("invalid base language provided")
+	}
+
+	candidateDirs := []string{normalized + ".lproj", normalized}
+	for _, dirName := range candidateDirs {
+		dirPath := filepath.Join(rootDir, dirName)
+		info, err := os.Stat(dirPath)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+
+		filePath, err := findStringsFileInDir(dirPath)
+		if err == nil {
+			return filePath, normalized, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no localization file found for %q in %s", normalized, rootDir)
+}
+
+func locateBaseStringsFile(rootDir, baseLang string) (string, string, error) {
+	if strings.TrimSpace(baseLang) != "" {
+		path, normalized, err := candidatePathForLang(rootDir, baseLang)
+		if err != nil {
+			return "", "", err
+		}
+		return path, normalized, nil
+	}
+
+	entries, err := os.ReadDir(rootDir)
+	if err != nil {
+		return "", "", err
+	}
+
+	type candidate struct {
+		path string
+		lang string
+	}
+
+	candidates := make([]candidate, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !strings.HasSuffix(entry.Name(), ".lproj") {
+			continue
+		}
+
+		lang := strings.TrimSuffix(entry.Name(), ".lproj")
+		path, normalized, err := candidatePathForLang(rootDir, lang)
+		if err == nil {
+			candidates = append(candidates, candidate{path: path, lang: normalized})
+		}
+	}
+
+	if len(candidates) == 1 {
+		return candidates[0].path, candidates[0].lang, nil
+	}
+
+	if len(candidates) > 1 {
+		return "", "", fmt.Errorf("multiple localization directories found in %s; please specify -baselang", rootDir)
+	}
+
+	return "", "", fmt.Errorf("no .strings localization files found in %s", rootDir)
+}
+
+func resolveBasePath(fileArg, baseLangFlag string) (string, string, string, error) {
+	if fileArg == "" {
+		return "", "", "", fmt.Errorf("file path is required")
+	}
+
+	info, err := os.Stat(fileArg)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	if !info.IsDir() {
+		normalized := strings.TrimSpace(strings.TrimSuffix(baseLangFlag, ".lproj"))
+		return fileArg, "", normalized, nil
+	}
+
+	basePath, normalized, err := locateBaseStringsFile(fileArg, baseLangFlag)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	return basePath, fileArg, normalized, nil
+}
+
+func loadSourceData(path string) (map[string]interface{}, string, error) {
+	ext := filepath.Ext(path)
+	var (
+		out map[string]interface{}
+		err error
+	)
+
 	switch ext {
 	case ".yaml", ".yml":
-		out, err = openYAML(*filePath)
+		out, err = openYAML(path)
 	case ".json":
-		out, err = openJSON(*filePath)
+		out, err = openJSON(path)
 	case ".strings":
-		out, err = openStrings(*filePath)
+		out, err = openStrings(path)
 	default:
-		logError("filePath", fmt.Errorf("unsupported file extension: %s", ext).Error())
-		return
+		err = fmt.Errorf("unsupported file extension: %s", ext)
 	}
 
 	if err != nil {
-		logError("open", err.Error())
-		return
+		return nil, "", err
 	}
-	flattenedData := flatten(out, "")
-	// inspect the output file for already translated keys
+
+	return out, ext, nil
+}
+
+func buildOutputPath(language, explicitOutput, ext, iosRoot, baseFilePath string) string {
+	if iosRoot != "" {
+		return filepath.Join(iosRoot, language+".lproj", filepath.Base(baseFilePath))
+	}
+
+	if explicitOutput != "" {
+		return explicitOutput
+	}
+
+	if ext == "" {
+		ext = ".json"
+	}
+
+	return fmt.Sprintf("output-%s%s", language, ext)
+}
+
+func translateToLanguage(source map[string]interface{}, outputPath string, sourceLanguage string, targetLanguage string, model string, chunkSize int, force bool) error {
+	flattenedData := flatten(source, "")
 
 	isOutputPathExist := false
-	if _, err := os.Stat(*outputPath); err == nil {
+	if _, err := os.Stat(outputPath); err == nil {
 		isOutputPathExist = true
 	}
+
 	allTranslated := make(map[string]string)
 	existingOutput := make(map[string]interface{})
-	if !(*force) && isOutputPathExist {
+	if !force && isOutputPathExist {
 		counter := 0
-		ext := filepath.Ext(*outputPath)
+		ext := filepath.Ext(outputPath)
+		var err error
 		switch ext {
 		case ".yaml", ".yml":
-			existingOutput, err = openYAML(*outputPath)
+			existingOutput, err = openYAML(outputPath)
 		case ".json":
-			existingOutput, err = openJSON(*outputPath)
+			existingOutput, err = openJSON(outputPath)
 		case ".strings":
-			existingOutput, err = openStrings(*outputPath)
+			existingOutput, err = openStrings(outputPath)
 		default:
-			err := fmt.Errorf("unsupported file extension: %s", ext)
-			logError("open", err.Error())
-			return
+			return fmt.Errorf("unsupported output file extension: %s", ext)
+		}
+		if err != nil {
+			return err
 		}
 		alreadyTranslated := flatten(existingOutput, "")
 		var keys []string
@@ -114,69 +435,138 @@ func main() {
 			keys = append(keys, k)
 		}
 		for _, k := range keys {
-			counter += 1
 			delete(flattenedData, k)
 			allTranslated[k] = alreadyTranslated[k]
+			counter++
 		}
 		logInfo("Skipping keys", strconv.Itoa(counter))
-	} else {
+	} else if force {
 		logInfo("Force", "enabled")
 	}
 
-	chunks := chunkKeys(flattenedData, *chunkSize)
+	chunks := chunkKeys(flattenedData, chunkSize)
 
 	duplicateKeyCount := make([]string, 0)
-	locker := new(sync.Mutex)
-	chunkChan := chunkGenerator(chunks)
-	workerCount := 2
-	var wg sync.WaitGroup
-	workerPool := make(chan struct{}, workerCount)
 	progressCounter := 0
 	totalChunks := len(chunks)
 	logInfo("Keys to translate", strconv.Itoa(len(flattenedData)))
-	fmt.Printf("\nThis can take a few minutes b/c %v is slow", *model)
-	fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
-	for chunk := range chunkChan {
-		wg.Add(1)
-		go func(chunk map[string]string) {
-			defer wg.Done()
-			workerPool <- struct{}{}
-			defer func() {
-				<-workerPool
-			}()
-			translatedChunk, err := translateString(chunk, *language, *model)
-			if err != nil {
-				logError("translateString", err.Error()+"\n You should restart this b/c the translations will not be complete.")
-				return
-			}
-			locker.Lock()
-			for k, v := range translatedChunk {
-				if _, ok := allTranslated[k]; !ok {
-					allTranslated[k] = v
-				} else {
-					duplicateKeyCount = append(duplicateKeyCount, k)
-				}
-
-			}
-			progressCounter += 1
-			locker.Unlock()
-			fmt.Printf("\rProgress: %d/%d\x1b[K", progressCounter, totalChunks)
-		}(chunk)
+	fmt.Printf("\nTranslating %s into %s\n", sourceLanguage, targetLanguage)
+	if totalChunks > 0 {
+		fmt.Printf("This can take a few minutes b/c %v is slow", model)
+		fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
+	} else {
+		fmt.Println("Warning: No strings need translation. The destination file may already contain all keys or the source data might be empty.")
+		fmt.Printf("\rProgress: %d/%d\x1b[K", 0, totalChunks)
 	}
-	wg.Wait()
+	for idx, chunk := range chunks {
+		translatedChunk, err := translateString(chunk, sourceLanguage, targetLanguage, model)
+		if err != nil {
+			fmt.Printf("\rProgress: %d/%d\x1b[K\n", progressCounter, totalChunks)
+			friendly := strings.TrimSpace(err.Error())
+			lines := make([]string, 0, 3)
+			if friendly != "" {
+				lines = append(lines, friendly)
+			}
+			lines = append(lines,
+				fmt.Sprintf("Chunk %d of %d failed while translating %s.", idx+1, totalChunks, targetLanguage),
+				"The translator stopped before finishing this language. Please fix the issue and rerun.",
+			)
+			logError("translateString", lines...)
+			return fmt.Errorf("translation halted after %d/%d chunks: %w", progressCounter, totalChunks, err)
+		}
+		for k, v := range translatedChunk {
+			if _, ok := allTranslated[k]; !ok {
+				allTranslated[k] = v
+			} else {
+				duplicateKeyCount = append(duplicateKeyCount, k)
+			}
+
+		}
+		progressCounter += 1
+		fmt.Printf("\rProgress: %d/%d\x1b[K", progressCounter, totalChunks)
+	}
 	unflatMap := unflattenJSON(allTranslated)
 	var unSquished []byte
-	switch ext {
+	outputExt := filepath.Ext(outputPath)
+	switch outputExt {
 	case ".yaml", ".yml":
 		unSquished, _ = yaml.Marshal(unflatMap)
 	case ".json":
 		unSquished, _ = json.Marshal(unflatMap)
 	case ".strings":
 		unSquished, _ = toStrings(allTranslated)
+	default:
+		return fmt.Errorf("unsupported output file extension: %s", outputExt)
 	}
 
-	save(unSquished, *outputPath)
-	fmt.Println("\n\nSaved result in:", *outputPath)
+	save(unSquished, outputPath)
+	fmt.Println("\n\nSaved result in:", outputPath)
+	return nil
+}
+
+func main() {
+	filePath := flag.String("file", "", "Path to the source file or directory")
+	languagesFlag := flag.String("lang", "", "Comma separated target languages")
+	baseLangFlag := flag.String("baselang", "", "Base language identifier (used when -file points to a directory of .lproj folders)")
+	baseLangAlias := flag.String("baselange", "", "Deprecated alias for -baselang")
+	force := flag.Bool("force", false, "forces all strings to be translated")
+	debug = flag.Bool("debug", false, "writes debug logs")
+	outputPath := flag.String("output", "", "output path (only used when translating a single language)")
+	model := flag.String("model", "gpt-4o-mini", "model")
+	chunkSize := flag.Int("chunksize", 500, "number of letters per chunk")
+	flag.Parse()
+
+	languages := parseLanguages(*languagesFlag)
+	if len(languages) == 0 {
+		logError("language", "Please provide one or more languages using -lang")
+		os.Exit(1)
+	}
+
+	baseLang := strings.TrimSpace(*baseLangFlag)
+	if baseLang == "" {
+		baseLang = strings.TrimSpace(*baseLangAlias)
+	}
+
+	baseFilePath, iosRoot, resolvedBaseLang, err := resolveBasePath(*filePath, baseLang)
+	if err != nil {
+		logError("filePath", err.Error())
+		os.Exit(1)
+	}
+
+	if *outputPath != "" && len(languages) > 1 && iosRoot == "" {
+		logError("output", "The -output flag can only be used when translating a single language")
+		os.Exit(1)
+	}
+
+	if iosRoot != "" && *outputPath != "" {
+		logInfo("output", "Ignoring -output because a localization directory was provided")
+	}
+
+	sourceData, ext, err := loadSourceData(baseFilePath)
+	if err != nil {
+		logError("open", err.Error())
+		os.Exit(1)
+	}
+
+	sourceLanguageName := friendlyLanguageName(resolvedBaseLang)
+	if sourceLanguageName == "" {
+		sourceLanguageName = "English"
+	}
+
+	logInfo("File Path", baseFilePath)
+	if iosRoot != "" {
+		logInfo("Localization Root", iosRoot)
+	}
+	logInfo("Source Language", sourceLanguageName)
+	logInfo("Languages", strings.Join(languages, ", "))
+
+	for _, lang := range languages {
+		output := buildOutputPath(lang, *outputPath, ext, iosRoot, baseFilePath)
+		if err := translateToLanguage(sourceData, output, sourceLanguageName, lang, *model, *chunkSize, *force); err != nil {
+			logError("translate", err.Error())
+			os.Exit(1)
+		}
+	}
 }
 
 func chunkGenerator(chunks []map[string]string) <-chan map[string]string {
@@ -215,17 +605,21 @@ func chunkToParams(chunk map[string]string) jsonschema.Definition {
 	}
 }
 
-func translateString(chunk map[string]string, targetLanguage string, model string) (map[string]string, error) {
+func translateString(chunk map[string]string, sourceLanguage string, targetLanguage string, model string) (map[string]string, error) {
 	if len(chunk) == 0 {
 		return nil, nil
 	}
 	input := chunkToString(chunk)
 	params := chunkToParams(chunk)
-	client := openai.NewClient(os.Getenv("OPENAI_API_KEY"))
+	apiKey, err := requireAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	client := openai.NewClient(apiKey)
 
 	f := openai.FunctionDefinition{
 		Name:        "upload",
-		Description: "uploads the " + targetLanguage + " phrases",
+		Description: "uploads the " + targetLanguage + " phrases translated from " + sourceLanguage,
 		Parameters:  params,
 	}
 	t := openai.Tool{
@@ -234,7 +628,7 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 	}
 
 	dialogue := []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "You will be provided key value pair English phrases, and your task is to translate the english values into concise " + targetLanguage + " and upload them. The messages are for an localization for a mobile application. respond with json"},
+		{Role: openai.ChatMessageRoleSystem, Content: "You will be provided key value pair " + sourceLanguage + " phrases, and your task is to translate the " + sourceLanguage + " values into concise " + targetLanguage + " and upload them. The messages are for a localization for a mobile application. respond with json"},
 		{Role: openai.ChatMessageRoleUser, Content: input},
 	}
 
@@ -245,10 +639,11 @@ func translateString(chunk map[string]string, targetLanguage string, model strin
 			Tools:    []openai.Tool{t},
 		},
 	)
-	if err != nil || len(resp.Choices) != 1 {
-		fmt.Printf("Completion error: err:%v len(choices):%v\n", err,
-			len(resp.Choices))
-		return nil, err
+	if err != nil {
+		return nil, formatOpenAIError(err)
+	}
+	if len(resp.Choices) != 1 {
+		return nil, fmt.Errorf("unexpected number of choices from OpenAI: %d", len(resp.Choices))
 	}
 	translatedChunk := make(map[string]string, len(chunk))
 	for k, _ := range chunk {
@@ -318,13 +713,13 @@ func save(json []byte, outputPath string) {
 	// Create the directory if it doesn't exist
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		logError("save", fmt.Sprintf("Error creating directory: %v\n", err))
+		logError("save", fmt.Sprintf("Error creating directory: %v", err))
 		return
 	}
 
 	err := os.WriteFile(outputPath, json, 0644)
 	if err != nil {
-		logError("save", fmt.Sprintf("writing to file: %v\n", err))
+		logError("save", fmt.Sprintf("writing to file: %v", err))
 	}
 }
 
@@ -333,7 +728,7 @@ func openStrings(path string) (map[string]interface{}, error) {
 	// Open the file
 	file, err := os.Open(path)
 	if err != nil {
-		logError("openStrings", fmt.Sprintf("opening file: %v\n", err))
+		logError("openStrings", fmt.Sprintf("opening file: %v", err))
 		return nil, err
 	}
 	defer file.Close()
@@ -365,7 +760,7 @@ func openStrings(path string) (map[string]interface{}, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		logError("openStrings", fmt.Sprintf("opening reading file: %v\n", err))
+		logError("openStrings", fmt.Sprintf("opening reading file: %v", err))
 
 		return nil, err
 	}
@@ -411,7 +806,9 @@ func chunkKeys(data map[string]string, chunkSize int) []map[string]string {
 	}
 
 	// Append the last chunk to the chunks slice
-	chunks = append(chunks, currentChunk)
+	if len(currentChunk) > 0 {
+		chunks = append(chunks, currentChunk)
+	}
 
 	return chunks
 }
